@@ -1,6 +1,6 @@
 ---
 name: summarize-call
-description: Transcribe a call recording with speaker diarization, summarize it, and create Obsidian vault notes (call note, transcript, person notes for participants). Works with video or audio files. Supports local transcription (mlx_whisper + pyannote) or ElevenLabs Scribe.
+description: Transcribe a call recording with speaker diarization, summarize it, and create Obsidian vault notes (call note + transcript). Works with video or audio files. Supports local transcription (auto-detects mlx_whisper on Apple Silicon or faster-whisper elsewhere) or ElevenLabs Scribe.
 user_invocable: true
 ---
 
@@ -14,18 +14,17 @@ Takes a call recording (video or audio), transcribes it with speaker labels, sum
 
 | Folder | Purpose |
 |---|---|
-| `03 Meetings/` | Where call notes and transcripts land |
-| `04 People/` | Person notes for participants |
-| `02 Daily/YYYY/MM/` | Daily notes, named `MM-DD-YY ddd.md` |
-| `_Templates/` | Note templates — skill installs `new person template.md` here on first run |
+| `meetings/` | Where call notes and transcripts land |
+| `daily/YYYY/` | Daily notes, named `MM-DD-YY ddd.md` |
 
 **CLI tools** — install these before first use, or let Step 0 walk you through it:
 
 | Tool | Purpose | Install |
 |---|---|---|
-| `ffmpeg` | Extract audio from video files | macOS: `brew install ffmpeg` · Linux: `apt install ffmpeg` or `dnf install ffmpeg` · Windows: [ffmpeg.org/download.html](https://ffmpeg.org/download.html) |
-| `mlx_whisper` (local path) | Local transcription | `pip install mlx-whisper` |
-| `pyannote.audio` (local path) | Local speaker diarization | see Step 1 walkthrough |
+| `ffmpeg` | Extract audio from video files | macOS: `brew install ffmpeg` · Linux: `apt install ffmpeg` or `dnf install ffmpeg` · Windows: ffmpeg.org/download.html |
+| `faster-whisper` (non-Apple) | Local transcription on Windows/Linux | `pip install faster-whisper` |
+| `mlx_whisper` (Apple Silicon) | Local transcription on M-series Macs | `pip install mlx-whisper` |
+| `pyannote.audio` | Speaker diarization | see Step 3 walkthrough |
 
 **Alternative to local**: set `ELEVENLABS_API_KEY` to use ElevenLabs Scribe for transcription + diarization in one call (paid, faster, no setup).
 
@@ -34,11 +33,9 @@ Takes a call recording (video or audio), transcribes it with speaker labels, sum
 The skill reads these variables at runtime. Override any of them via environment variables, or edit the defaults here:
 
 ```
-VAULT_ROOT       = $VAULT_ROOT        # auto-detected if not set (see Step 0a)
-MEETINGS_DIR     = 03 Meetings
-PEOPLE_DIR       = 04 People
-DAILY_DIR        = 02 Daily
-TEMPLATES_DIR    = _Templates
+VAULT_ROOT    = $VAULT_ROOT   # auto-detected if not set (see Step 0a)
+MEETINGS_DIR  = meetings
+DAILY_DIR     = daily
 ```
 
 All paths below are relative to `$VAULT_ROOT`.
@@ -77,14 +74,14 @@ echo "Vault: ${vault:-NOT FOUND}"
 If no vault is found, ask the user:
 
 > **What's the absolute path to your Obsidian vault?**
-> Recommended: use a **new, dedicated Obsidian vault** for this skill — not your existing personal vault. The skill creates and modifies many notes and folders, and a clean vault avoids polluting your existing notes. If you don't have one yet, create an empty folder, open it in Obsidian (File → Open vault as folder), and paste that path here.
+> Recommended: use a **new, dedicated Obsidian vault** for this skill — not your existing personal vault. The skill creates and modifies many notes and folders, and a clean vault avoids polluting your existing notes. If you don't have one yet, create an empty folder, open it in Obsidian (File -> Open vault as folder), and paste that path here.
 
 After they answer, validate that `<answer>/.obsidian/` exists before using it — if not, warn that the path doesn't look like an Obsidian vault (they may need to open it in Obsidian first) and ask them to confirm or re-enter. Use the validated answer as `$VAULT_ROOT` for the session (and suggest they set it permanently in their shell profile).
 
 ### 0b. Check required folders
 
 ```bash
-for d in "$MEETINGS_DIR" "$PEOPLE_DIR" "$DAILY_DIR" "$TEMPLATES_DIR"; do
+for d in "$MEETINGS_DIR" "$DAILY_DIR"; do
   [ -d "$VAULT_ROOT/$d" ] || echo "MISSING: $d"
 done
 ```
@@ -103,54 +100,49 @@ If ffmpeg is missing, ask the user before installing. Install command depends on
 - Linux (Fedora/RHEL): `sudo dnf install ffmpeg`
 - Windows: download from https://ffmpeg.org/download.html
 
-### 0d. Install the person template if missing
-
-If `$VAULT_ROOT/$TEMPLATES_DIR/new person template.md` does not exist, ask the user which version to install:
-
-> **Install person template — which version?**
-> 1. **Minimal** (default, works in any vault)
-> 2. **Full** (requires Dataview plugin + Obsidian Bases)
-
-Copy the chosen template from the repo's shared `templates/` directory (sibling of this skill dir, i.e. `../templates/`) into `$VAULT_ROOT/$TEMPLATES_DIR/new person template.md`. If the file already exists, leave it alone — the user may have customized it.
-
-Once Step 0 passes, proceed to Step 0.5.
-
-## Step 0.5: Determine depth mode
-
-Before transcribing, establish which depth the user wants:
-
-1. **Scan the invocation first.** If the user's request already specifies a mode, use it and skip the prompt:
-   - Words like `minimal`, `fast`, `quick`, `--minimal`, `-m` → minimal mode
-   - Words like `detailed`, `deep`, `full`, `--detailed`, `-d` → detailed mode
-2. **Otherwise, prompt.** No default — if unspecified, ask every time:
-
-> **Depth?**
-> 1. **Detailed** (best results) — person notes for every person mentioned, including third parties name-dropped mid-call (celebrities, YouTubers, mutual friends). Public figures get researched biographies.
-> 2. **Minimal** (fast) — person notes for call participants only. Name-drops mid-call stay as dangling wikilinks.
-
-This keeps interactive runs explicit while letting scheduled tasks / cron / `/loop` pass the mode in the invocation (e.g. `/summarize-call ~/call.mp4 minimal`) without blocking on input.
-
-The chosen mode determines how Step 6 runs.
-
 ## Step 1: Choose transcription method
 
 Ask the user:
 
 > **Transcription method?**
-> 1. **Local** (mlx_whisper + pyannote — free, private, slower, requires setup)
+> 1. **Local** (free, private, slower, requires setup)
 > 2. **ElevenLabs Scribe** (paid, faster, handles transcription + diarization in one call)
 
-### Option A: Local — walkthrough if not set up
+### Option A: Local
 
-If the user picks local, verify each component and walk them through any missing piece:
-
-**1. mlx_whisper**
+**Auto-detect transcription engine:**
 ```bash
-command -v mlx_whisper >/dev/null 2>&1 || echo "MISSING: mlx_whisper"
+arch=$(uname -m)
+if [ "$arch" = "arm64" ]; then
+  engine="mlx_whisper"
+else
+  engine="faster-whisper"
+fi
+echo "Engine: $engine"
 ```
-If missing, ask before installing: `pip install mlx-whisper`
 
-**2. pyannote.audio environment**
+- **Apple Silicon (arm64)**: use `mlx_whisper` — optimized for M-series GPUs
+- **Windows / Linux / Intel Mac**: use `faster-whisper` — runs on CPU or CUDA
+
+Check for the detected engine:
+```bash
+command -v "$engine" >/dev/null 2>&1 || echo "MISSING: $engine"
+```
+
+If missing, ask before installing:
+- mlx_whisper: `pip install mlx-whisper`
+- faster-whisper: `pip install faster-whisper`
+
+**Platform notes (Windows):**
+If running on Windows and you see `OMP: Error #15: Initializing libiomp5md.dll`, set before running:
+```bash
+export KMP_DUPLICATE_LIB_OK=TRUE
+```
+This is a runtime workaround for a known OpenMP conflict on Windows — do not set it permanently in your profile unless needed.
+
+If `python` is not on PATH, use the full path to your Python installation (e.g. `C:/Users/<you>/miniconda3/python.exe`).
+
+**pyannote.audio environment:**
 
 Check for the venv at `~/.local/share/summarize-call/pyannote-env` (persists across reboots, XDG-compliant):
 ```bash
@@ -161,13 +153,12 @@ PYANNOTE_ENV="${XDG_DATA_HOME:-$HOME/.local/share}/summarize-call/pyannote-env"
 If missing, walk through setup:
 ```bash
 mkdir -p "$(dirname "$PYANNOTE_ENV")"
-# Create venv with uv (or python3 -m venv if uv not installed)
 uv venv "$PYANNOTE_ENV"
 source "$PYANNOTE_ENV/bin/activate"
 uv pip install pyannote.audio torch torchaudio
 ```
 
-**3. HuggingFace token**
+**HuggingFace token:**
 
 Check for `HF_TOKEN`:
 ```bash
@@ -186,9 +177,9 @@ If missing, tell the user:
 
 Wait for the user to confirm before continuing.
 
-### Option B: ElevenLabs Scribe — walkthrough if not set up
+### Option B: ElevenLabs Scribe
 
-If the user picks ElevenLabs, check for the API key:
+Check for the API key:
 ```bash
 [ -n "$ELEVENLABS_API_KEY" ] || echo "MISSING: ELEVENLABS_API_KEY"
 ```
@@ -213,17 +204,30 @@ ffmpeg -v quiet -i "<input>" -vn -acodec pcm_s16le -ar 16000 -ac 1 /tmp/<name>.w
 
 ## Step 3: Transcribe + diarize
 
-### Option A: Local (mlx_whisper + pyannote)
+### Option A: Local
 
-**Transcribe:**
+**Transcribe with auto-detected engine:**
+
+mlx_whisper (Apple Silicon):
 ```bash
 mlx_whisper --model mlx-community/whisper-large-v3-turbo --language en \
   --output-dir /tmp --output-format json \
   --condition-on-previous-text False /tmp/<name>.wav
 ```
-- Use `--language en` for English calls
-- For Japanese: `--language ja` (or use a `kotoba-whisper` model for better accuracy)
-- `--condition-on-previous-text False` prevents whisper hallucination loops
+
+faster-whisper (Windows / Linux):
+```python
+from faster_whisper import WhisperModel
+
+model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+segments, info = model.transcribe("/tmp/<name>.wav", language="en",
+                                   condition_on_previous_text=False)
+# save segments to JSON matching the mlx_whisper output format
+```
+
+Notes:
+- Use `--language en` / `language="en"` for English calls; for Japanese use `ja`
+- `--condition-on-previous-text False` / `condition_on_previous_text=False` prevents hallucination loops
 - Start processing partial results while transcription is still running — don't block
 
 **Diarize with pyannote:**
@@ -236,7 +240,7 @@ pipeline = Pipeline.from_pretrained(
     use_auth_token=os.environ["HF_TOKEN"]
 )
 device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-pipeline.to(torch.device(device))  # GPU if available, CPU otherwise
+pipeline.to(torch.device(device))
 
 output = pipeline("/tmp/<name>.wav", num_speakers=<N>)
 annotation = output.speaker_diarization
@@ -280,11 +284,9 @@ Scribe handles both transcription AND diarization in one call — no pyannote ne
 
 ## Step 4: Summarize
 
-- Model choice depends on depth mode:
-  - **Detailed**: use the highest-quality model available (Opus if the user has access, otherwise Sonnet)
-  - **Minimal**: Sonnet — good enough for conversational content at ~5x lower cost
+- Use Sonnet for all calls
 - For long transcripts (>3000 words), split into chunks and summarize each in parallel, then combine
-- Extract: key topics, decisions, action items, notable quotes (with speaker attribution)
+- Extract: key topics, decisions, action items
 
 ## Step 5: Create vault notes
 
@@ -296,8 +298,7 @@ Scribe handles both transcription AND diarization in one call — no pyannote ne
   ---
   date: YYYY-MM-DD
   duration: <seconds>
-  meeting: "[[<Call Note Title>]]"
-  unread: true
+  meeting: "<Call Note Title>"
   ---
   ```
 
@@ -307,16 +308,10 @@ Scribe handles both transcription AND diarization in one call — no pyannote ne
   ```yaml
   ---
   created: YYYY-MM-DDTHH:MM
-  updated: YYYY-MM-DDTHH:MM
-  tags: [call]
   date: YYYY-MM-DD
-  start: HH:MM
-  end: HH:MM
-  duration: <seconds>
-  people: ["[[Participant 1]]", "[[Participant 2]]"]
+  tags: [call]
+  participants: ["Name 1", "Name 2"]
   summary: "1-line description of call topics"
-  transcript: "[[<Call Note Title> Transcript]]"
-  unread: true
   ---
   ```
 - No `# Title` heading — filename is the title
@@ -334,59 +329,28 @@ Scribe handles both transcription AND diarization in one call — no pyannote ne
   ## Action Items
   - [ ] ...
 
-  ## Notable Quotes
-  > [!quote] [[Participant 1]]
-  > "..."
-
-  ## People Mentioned
-  - [[Person Name]] — brief context
+  ## Further Reading
+  - Person name -- brief context
+  - Book or resource -- brief context
   ```
 - `summary` frontmatter field is **mandatory** — never omit it
-- **Wikilink everything** — people, companies, products, concepts, places
-
-### Person notes
-- For each participant: create at `$PEOPLE_DIR/<Full Name>.md` using the template at `$VAULT_ROOT/$TEMPLATES_DIR/new person template.md`
-- Extract ALL biographical details mentioned in the call (location, career, family, background)
-- For mid-call name-drops: behavior depends on depth mode (see Step 6)
+- No wikilinks
 
 ### Daily note
-- Update `$VAULT_ROOT/$DAILY_DIR/YYYY/MM/MM-DD-YY ddd.md` (create `YYYY/MM/` if missing)
+- Update `$VAULT_ROOT/$DAILY_DIR/YYYY/MM-DD-YY ddd.md` (create `YYYY/` if missing)
 - No `# Title` heading — filename is the title
-- Set `unread: true` in frontmatter
 - Add under a `## calls/meetings` section:
   ```markdown
-  - [[<Call Note Title>]] — brief description
+  - <Call Note Title> -- brief description
   ```
-
-## Step 6: Handle mid-call name-drops
-
-### Detailed mode
-For every person, company, product, or concept wikilinked in the call note (that isn't already a note), create a reference or person note:
-- **People**: research public figures (birthday, career, links); private individuals get minimal notes based only on what was said
-- **Concepts / companies / products**: create in `07 References/` (or `$REFERENCES_DIR` if you have the `/summarize` skill installed) with a 2-4 sentence explanation
-- For large numbers of notes (>10 missing), dispatch parallel subagents (highest available model) in batches of ~20
-
-After all notes are created, audit for dangling links. The regex excludes `|` (alias), `#` (heading ref), and `^` (block ref) so `[[Target|Alias]]`, `[[Page#Heading]]`, and `[[Page^block]]` all resolve to the canonical note name `Target` / `Page`:
-```bash
-grep -oE '\[\[[^]|#^]+' "<call_note_path>" | sed 's/\[\[//' | sort -u
-for term in <each>; do
-  found=$(find "$VAULT_ROOT" -name "$term.md" -not -path "*/.Trash/*" 2>/dev/null | head -1)
-  [ -z "$found" ] && echo "MISSING: $term"
-done
-```
-Re-create any missed notes. The call is not done until zero dangling links remain.
-
-### Minimal mode
-Create person notes only for call participants (those in the `people` frontmatter). All other wikilinks — mid-call name-drops, concepts, companies — stay dangling. Skip the audit.
 
 ## Key rules
 
-1. **Wikilink everything** in the call note — every person, company, concept, place
+1. **No wikilinks** in call notes or transcripts
 2. **No `# Title` headings** — Obsidian shows filename as title
 3. **Never repeat frontmatter in body**
 4. **`summary` frontmatter is mandatory** on call notes
-5. **`unread: true`** on every note created
-6. **Model choice**: detailed uses the highest available model (Opus if accessible, else Sonnet); minimal uses Sonnet. Never Haiku.
-7. **Always `--condition-on-previous-text False`** on mlx_whisper to prevent hallucination loops
-8. **Auto-detect device** for pyannote (CUDA → MPS → CPU) so it works on any platform
-9. **Person note `## updates` links to the call note**, never the daily note
+5. **Always use Sonnet** — never Haiku
+6. **Always `--condition-on-previous-text False`** on mlx_whisper / `condition_on_previous_text=False` on faster-whisper to prevent hallucination loops
+7. **Auto-detect transcription engine** based on architecture (arm64 -> mlx_whisper, else faster-whisper)
+8. **Auto-detect device** for pyannote (CUDA -> MPS -> CPU) so it works on any platform
