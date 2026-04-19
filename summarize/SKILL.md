@@ -66,14 +66,18 @@ When the argument looks like a local file path (not starting with `http`) and th
 if --serial (or -s):
     for each URL in file:
         run the full summarize workflow (Steps 1-7) for that URL
+        after the note is successfully written, delete that URL line from the batch file
         wait for completion before proceeding to next
 
 if --parallel (default):
     for each URL in file:
         launch a background Agent (general-purpose) with the full summarize prompt for that URL
-    collect results as agents complete
+    as each agent completes successfully:
+        delete that URL line from the batch file
     update daily note once at the end with all entries
 ```
+
+**Deleting completed URLs:** use the Edit tool to remove the specific line from the batch file. Remove the entire line including the newline. If the file becomes empty after all URLs are processed, that is the expected end state. Do not delete a line if the note was not successfully written (e.g. on error, leave the URL in the file so it can be retried).
 
 **Daily note in batch mode:** to avoid write conflicts when running parallel, each agent should **return** its note title and one-line description instead of writing the daily note itself. The orchestrating skill invocation collects all results and writes a single `## content summary` block with all entries.
 
@@ -346,3 +350,4 @@ Update `$VAULT_ROOT/$DAILY_DIR/YYYY/MM-DD-YY ddd.md` (e.g. `daily/2026/04-11-26 
 8. **`> [!tldr]`** is mandatory — every summary starts with a concise overview callout
 9. **`## Further Reading`** is mandatory — always close with a flat reference list
 10. **Batch file input**: if the argument is a local file path, read each line as a URL and summarize all of them; use `--parallel` (default) or `--serial` to control execution order; write daily note once at the end
+11. **Delete on success**: in batch mode, delete each URL from the batch file immediately after its note is successfully written — only on success, never on error
