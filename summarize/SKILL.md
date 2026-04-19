@@ -191,6 +191,7 @@ Frontmatter for all notes:
 created: YYYY-MM-DDTHH:MM
 date: YYYY-MM-DD
 tags: [<content type>]
+status: unread
 link: "<source URL or file path>"
 summary: "one-line description"
 ---

@@ -310,6 +310,7 @@ Scribe handles both transcription AND diarization in one call — no pyannote ne
   created: YYYY-MM-DDTHH:MM
   date: YYYY-MM-DD
   tags: [call]
+  status: unread
   participants: ["Name 1", "Name 2"]
   summary: "1-line description of call topics"
   ---
