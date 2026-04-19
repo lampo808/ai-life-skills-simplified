@@ -42,12 +42,49 @@ All paths below are relative to `$VAULT_ROOT`.
 
 ## Trigger
 
-When the user provides content to summarize: a URL (YouTube, article, blog), a PDF/file path, pasted text, or a reference to content already in the vault.
+When the user provides content to summarize: a URL (YouTube, article, blog), a PDF/file path, pasted text, a reference to content already in the vault, or a text file containing a list of URLs to batch-summarize.
 
 ## Inputs
 
-- **Source**: URL, file path, or pasted text
+- **Source**: URL, file path, pasted text, or a `.txt`/`.md` file containing one URL per line
 - **Audience** (optional): defaults to "general reader." User may specify (e.g. "high school student", "expert", "5-year-old")
+- **`--parallel`** (default): when processing a batch file, launch all summaries as parallel background agents
+- **`--serial`**: when processing a batch file, process one URL at a time in order
+
+## Batch mode (file input)
+
+When the argument looks like a local file path (not starting with `http`) and the file exists, treat it as a **batch file**: read each non-empty, non-comment line as a URL and summarize them all.
+
+**Detection:**
+- Argument does not start with `http`
+- File exists on disk (use Bash `test -f` or Read tool to confirm)
+- Lines that start with `#` are treated as comments and skipped
+
+**Execution:**
+
+```
+if --serial (or -s):
+    for each URL in file:
+        run the full summarize workflow (Steps 1-7) for that URL
+        wait for completion before proceeding to next
+
+if --parallel (default):
+    for each URL in file:
+        launch a background Agent (general-purpose) with the full summarize prompt for that URL
+    collect results as agents complete
+    update daily note once at the end with all entries
+```
+
+**Daily note in batch mode:** to avoid write conflicts when running parallel, each agent should **return** its note title and one-line description instead of writing the daily note itself. The orchestrating skill invocation collects all results and writes a single `## content summary` block with all entries.
+
+**Reporting:** after all items complete, report a summary table:
+```
+| # | Title | Status |
+|---|-------|--------|
+| 1 | Note Title | done |
+| 2 | Note Title | done |
+...
+```
 
 ## Step 0: Bootstrap check (first run)
 
@@ -101,15 +138,15 @@ For each missing tool, tell the user what's missing and **ask before installing*
 ### YouTube video
 ```bash
 # Get metadata
-yt-dlp --cookies-from-browser firefox \
-  --print "%(id)s|%(title)s|%(duration)s|%(upload_date)s|%(view_count)s|%(channel)s|%(channel_id)s" \
+yt-dlp --print "%(id)s|%(title)s|%(duration)s|%(upload_date)s|%(view_count)s|%(channel)s|%(channel_id)s" \
   --no-download "<URL>"
 
 # Try auto-subtitles first (fastest, free)
-yt-dlp --cookies-from-browser firefox \
-  --write-auto-sub --sub-lang en --sub-format json3 \
+yt-dlp --write-auto-sub --sub-lang en --sub-format json3 \
   --skip-download -o "/tmp/summarize/%(id)s" "<URL>"
 ```
+
+**yt-dlp error handling:** if yt-dlp fails, diagnose the error before retrying. Common fixes include adding `--extractor-args`, `--cookies-from-browser`, or other flags. Once you find a fix that works, **save it to memory** (`memory/feedback_ytdlp.md` in the vault) so it is applied automatically in future sessions. Do not hard-code environment-specific flags here.
 
 If auto-subs exist, extract text from the JSON3 file. If not, or if quality is poor, download audio and transcribe locally (ask user: run `yt-dlp` to download, then use `whisper` or `faster-whisper` for transcription).
 
@@ -308,3 +345,4 @@ Update `$VAULT_ROOT/$DAILY_DIR/YYYY/MM-DD-YY ddd.md` (e.g. `daily/2026/04-11-26 
 7. **Always embed/link the source** — source URL or file path in the `link` frontmatter field
 8. **`> [!tldr]`** is mandatory — every summary starts with a concise overview callout
 9. **`## Further Reading`** is mandatory — always close with a flat reference list
+10. **Batch file input**: if the argument is a local file path, read each line as a URL and summarize all of them; use `--parallel` (default) or `--serial` to control execution order; write daily note once at the end
